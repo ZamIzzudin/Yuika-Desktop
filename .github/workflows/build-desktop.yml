@@ -1,0 +1,85 @@
+name: Build desktop installer
+
+# Manual build of the Windows NSIS installer. The studio ref to bundle is
+# an input (tag or branch of ZamIzzudin/Yuika), which is how a desktop
+# release pins the studio version it ships (see README, release policy).
+#
+# The studio repository is private for now, so cloning it needs the
+# STUDIO_TOKEN secret (a PAT with read access to ZamIzzudin/Yuika).
+# Once the studio is public, the token can be removed: the clone step
+# falls back to an anonymous clone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      studio_ref:
+        description: "Yuika studio ref to bundle (tag or branch)"
+        required: true
+        default: "main"
+      release_tag:
+        description: "Optional tag name: also attach the installer to a draft release"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Clone the studio repository
+        env:
+          STUDIO_TOKEN: ${{ secrets.STUDIO_TOKEN }}
+        shell: bash
+        run: |
+          REF="${{ inputs.studio_ref }}"
+          URL="https://github.com/ZamIzzudin/Yuika.git"
+          if [ -n "$STUDIO_TOKEN" ]; then
+            URL="https://x-access-token:${STUDIO_TOKEN}@github.com/ZamIzzudin/Yuika.git"
+          fi
+          # Sibling checkout: scripts resolve ../your-yui next to this repo.
+          git clone --depth 1 --branch "$REF" "$URL" "$GITHUB_WORKSPACE/../your-yui"
+          SHA="$(git -C "$GITHUB_WORKSPACE/../your-yui" rev-parse HEAD)"
+          echo "Bundled studio: $REF ($SHA)"
+
+      - name: Build installer (installs studio deps, exports UI, tauri build)
+        shell: bash
+        run: |
+          npm ci
+          npm run desktop:build
+
+      - name: Compute artifact name
+        id: art
+        shell: bash
+        run: |
+          REF="$(echo '${{ inputs.studio_ref }}' | sed 's|/|-|g')"
+          echo "name=yuika-setup-$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.art.outputs.name }}
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Attach to draft release
+        if: ${{ inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          draft: true
+          files: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          body: "Bundles studio ref ${{ inputs.studio_ref }}."

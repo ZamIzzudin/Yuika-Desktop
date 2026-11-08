@@ -30,6 +30,19 @@ const out = path.join(web, "out");
 const dist = path.join(root, "dist", "web");
 
 console.log(`[build-desktop-web] studio: ${studio}`);
+// Fresh checkout (CI, new contributor): install studio deps first.
+if (!existsSync(path.join(studio, "node_modules"))) {
+  console.log("[build-desktop-web] studio node_modules missing, running npm ci");
+  const ci = spawnSync("npm", ["ci"], {
+    cwd: studio,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (ci.status !== 0) {
+    console.error("[build-desktop-web] studio npm ci failed");
+    process.exit(ci.status ?? 1);
+  }
+}
 const r = spawnSync("npx", ["next", "build"], {
   cwd: web,
   stdio: "inherit",
