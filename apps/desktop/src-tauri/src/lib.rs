@@ -17,13 +17,39 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, RunEvent, State, WebviewWindow};
+use tauri::{AppHandle, Manager, RunEvent, State, WebviewWindow};
 
 const API_ADDR: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(
     std::net::Ipv4Addr::LOCALHOST,
     3211,
 ));
 const API_BOOT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Setup terakhir (mode onboarding) dipersist di app_config_dir, launch
+/// berikutnya auto-resume dari welcome.html (bukan mengulang picker).
+/// "Switch mode" di dalam UI memanggil clear_last_setup via ?reset=1.
+fn setup_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("setup.json"))
+}
+
+fn read_setup(app: &AppHandle) -> serde_json::Value {
+    setup_file(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_setup(app: &AppHandle, v: serde_json::Value) {
+    if let Some(p) = setup_file(app) {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, v.to_string());
+    }
+}
 
 /// Child API yang di-spawn shell (None = API dijalankan pihak lain).
 #[derive(Default)]
@@ -85,7 +111,8 @@ fn spawn_api() -> std::io::Result<Child> {
 /// background, lalu navigasi window ke UI web. Status dilaporkan ke picker
 /// via window.__hostStatus / window.__hostError di welcome.html.
 #[tauri::command]
-fn pick_host(window: WebviewWindow, api: State<'_, ApiProcess>) -> Result<(), String> {
+fn pick_host(window: WebviewWindow, app: AppHandle, api: State<'_, ApiProcess>) -> Result<(), String> {
+    write_setup(&app, serde_json::json!({ "mode": "host" }));
     if !api_healthy() {
         let child =
             spawn_api().map_err(|e| format!("failed to start local engine: {e}"))?;
@@ -113,15 +140,30 @@ fn pick_host(window: WebviewWindow, api: State<'_, ApiProcess>) -> Result<(), St
 
 /// P2-DTL-1 REMOTE: navigasi window ke URL host lain (web-host di mesin lain).
 #[tauri::command]
-fn pick_remote(window: WebviewWindow, url: String) -> Result<(), String> {
+fn pick_remote(window: WebviewWindow, app: AppHandle, url: String) -> Result<(), String> {
     let url = url.trim().to_string();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("URL must start with http:// or https://".into());
     }
+    write_setup(&app, serde_json::json!({ "mode": "remote", "url": url }));
     let js = serde_json::to_string(&url).map_err(|e| e.to_string())?;
     window
         .eval(&format!("location.replace({js})"))
         .map_err(|e| e.to_string())
+}
+
+/// Setup terakhir untuk auto-resume welcome.html (objek kosong bila belum ada).
+#[tauri::command]
+fn get_last_setup(app: AppHandle) -> serde_json::Value {
+    read_setup(&app)
+}
+
+/// Hapus setup tersimpan (dipanggil welcome.html saat ?reset=1).
+#[tauri::command]
+fn clear_last_setup(app: AppHandle) {
+    if let Some(p) = setup_file(&app) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 /// Matikan API yang kita spawn sendiri (tree-kill; npm → node anak).
@@ -154,7 +196,12 @@ fn kill_api(app: &tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .manage(ApiProcess::default())
-        .invoke_handler(tauri::generate_handler![pick_host, pick_remote])
+        .invoke_handler(tauri::generate_handler![
+            pick_host,
+            pick_remote,
+            get_last_setup,
+            clear_last_setup
+        ])
         .build(tauri::generate_context!())
         .expect("error while building yuika desktop")
         .run(|app, event| {
