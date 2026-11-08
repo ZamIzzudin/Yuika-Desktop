@@ -1,0 +1,11 @@
+{
+  "name": "yuika-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Yuika desktop shell (Tauri 2). Thin client around a Yuika studio instance.",
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "desktop": "npm --workspace @yuika/desktop run tauri dev",
+    "desktop:build": "npm --workspace @yuika/desktop run tauri build"
+  }
+}

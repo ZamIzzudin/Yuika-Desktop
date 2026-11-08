@@ -1,0 +1,12 @@
+{
+  "name": "@yuika/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Yuika desktop shell (Tauri 2): reuses the web UI, onboarding host/remote (P2-DTL-1).",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
