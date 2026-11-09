@@ -80,9 +80,10 @@ fn api_healthy() -> bool {
     TcpStream::connect_timeout(&API_ADDR, Duration::from_millis(300)).is_ok()
 }
 
-/// Spawn API lokal (dev): `npm run dev -w @yuika/api` dari root repo.
+/// Spawn API lokal (dev): `npm run dev -w @yuika/api` dari root repo
+/// studio (checkout sibling; path engine hanya dipakai mode build).
 #[cfg(debug_assertions)]
-fn spawn_api() -> std::io::Result<Child> {
+fn spawn_api(_app: &AppHandle) -> std::io::Result<Child> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -99,12 +100,135 @@ fn spawn_api() -> std::io::Result<Child> {
         .spawn()
 }
 
-/// Build mode: API dibundel sebagai resource/sidecar (P2-DTL-3, belum aktif).
+/// Buang prefix verbatim `\\?\` dari path (resource_dir Tauri memakai
+/// bentuk extended-length; node.exe tidak memahaminya sebagai entry arg —
+/// resolveMainPath-nya menerima 'C:' dan EISDIR). Bentuk UNC dikembalikan ke
+/// `\\server\\share`.
+fn plain_path(p: PathBuf) -> PathBuf {
+    let s = p.as_os_str().to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    p
+}
+
+/// Build mode (P2-DTL-3): engine dibundel sebagai resource — node.exe +
+/// yuika-api.cjs (esbuild) + personas/skills/mcp.json, diproduksi
+/// scripts/bundle-engine.mjs → tauri.conf `resources` (resource_dir/engine).
+/// Data user (db, workspace, log, env override) di app_data_dir.
 #[cfg(not(debug_assertions))]
-fn spawn_api() -> std::io::Result<Child> {
-    Err(std::io::Error::other(
-        "host mode in packaged builds ships with P2-DTL-3 (api sidecar)",
-    ))
+fn spawn_api(app: &AppHandle) -> std::io::Result<Child> {
+    let res = plain_path(
+        app.path()
+            .resource_dir()
+            .map_err(|e| std::io::Error::other(format!("resource dir: {e}")))?,
+    );
+    let engine = res.join("engine");
+    let node = engine.join("node").join("node.exe");
+    let api = engine.join("api").join("yuika-api.cjs");
+    if !node.exists() {
+        return Err(std::io::Error::other(format!(
+            "bundled engine missing: {}",
+            node.display()
+        )));
+    }
+    let data = plain_path(
+        app.path()
+            .app_data_dir()
+            .map_err(|e| std::io::Error::other(format!("app data dir: {e}")))?,
+    );
+    std::fs::create_dir_all(&data)?;
+
+    let api_dir = engine.join("api");
+    let mut cmd = Command::new(&node);
+    cmd.arg(&api)
+        .env("YUI_API_PORT", "3211")
+        .env("YUI_DB_PATH", data.join("demo.db"))
+        .env("YUI_WORKSPACE_DIR", data.join("workspace"))
+        .env("YUI_PERSONAS_DIR", api_dir.join("packages").join("personas"))
+        .env("YUI_SKILLS_DIR", api_dir.join("packages").join("skills"))
+        .env("YUI_MCP_CONFIG", api_dir.join("mcp.json"))
+        .current_dir(&data);
+
+    // Override opsional user: app_data_dir/yuika.env (KEY=VALUE, # komentar)
+    // — mis. YUI_PORTAL_URL/YUI_RELAY_URL untuk host SSO; env yang sudah
+    // di-set proses shell TIDAK ditimpa (konsisten dengan env-boot).
+    if let Ok(txt) = std::fs::read_to_string(data.join("yuika.env")) {
+        for line in txt.lines() {
+            let l = line.trim();
+            if l.is_empty() || l.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = l.split_once('=') {
+                if std::env::var(k.trim()).is_err() {
+                    cmd.env(k.trim(), v.trim());
+                }
+            }
+        }
+    }
+
+    // Log engine ke file (rotasi kasar >10 MB agar tidak tumbuh tanpa batas).
+    let log_path = data.join("api.log");
+    if log_path
+        .metadata()
+        .map(|m| m.len() > 10 * 1024 * 1024)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&log_path);
+    }
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    cmd.stdout(std::process::Stdio::from(
+        log.try_clone().map_err(|e| std::io::Error::other(e))?,
+    ));
+    cmd.stderr(std::process::Stdio::from(log));
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd.spawn()
+}
+
+/// Build mode: saat health timeout, engine kemungkinan mati/exit duluan —
+/// tampilkan penyebab ASLI (ekor api.log, mis. "Env belum lengkap")
+/// alih-alih pesan generik. Dev mode tak punya log file → pesan generik.
+#[cfg(not(debug_assertions))]
+fn boot_failure_reason(app: &AppHandle) -> String {
+    let log = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("api.log"))
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let tail = log
+        .map(|t| {
+            t.lines()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if tail.is_empty() {
+        "local engine did not become ready in time".into()
+    } else {
+        format!("local engine failed to start:\n{tail}")
+    }
+}
+
+#[cfg(debug_assertions)]
+fn boot_failure_reason(_app: &AppHandle) -> String {
+    "local engine did not become ready in time".into()
 }
 
 /// P2-DTL-1 HOST: pastikan API hidup (spawn bila belum), tunggu health di
@@ -115,7 +239,7 @@ fn pick_host(window: WebviewWindow, app: AppHandle, api: State<'_, ApiProcess>) 
     write_setup(&app, serde_json::json!({ "mode": "host" }));
     if !api_healthy() {
         let child =
-            spawn_api().map_err(|e| format!("failed to start local engine: {e}"))?;
+            spawn_api(&app).map_err(|e| format!("failed to start local engine: {e}"))?;
         *api.0.lock().map_err(|e| e.to_string())? = Some(child);
     }
     // Poll health di thread terpisah; jangan blok command thread.
@@ -128,8 +252,10 @@ fn pick_host(window: WebviewWindow, app: AppHandle, api: State<'_, ApiProcess>) 
                 return;
             }
             if Instant::now() > deadline {
-                let _ = window
-                    .eval("window.__hostError && window.__hostError('local engine did not become ready in time')");
+                let msg = boot_failure_reason(&app);
+                let js = serde_json::to_string(&msg)
+                    .unwrap_or_else(|_| "local engine did not become ready in time".into());
+                let _ = window.eval(&format!("window.__hostError && window.__hostError({js})"));
                 return;
             }
             std::thread::sleep(Duration::from_millis(400));

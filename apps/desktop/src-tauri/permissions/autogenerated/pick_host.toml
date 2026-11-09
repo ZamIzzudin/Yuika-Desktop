@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-host"
+description = "Enables the pick_host command without any pre-configured scope."
+commands.allow = ["pick_host"]
+
+[[permission]]
+identifier = "deny-pick-host"
+description = "Denies the pick_host command without any pre-configured scope."
+commands.deny = ["pick_host"]

@@ -6,6 +6,10 @@
   "workspaces": ["apps/desktop"],
   "scripts": {
     "desktop": "npm --workspace @yuika/desktop run tauri dev",
-    "desktop:build": "npm --workspace @yuika/desktop run tauri build"
+    "desktop:engine": "node scripts/bundle-engine.mjs",
+    "desktop:build": "node scripts/bundle-engine.mjs && npm --workspace @yuika/desktop run tauri build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   }
 }

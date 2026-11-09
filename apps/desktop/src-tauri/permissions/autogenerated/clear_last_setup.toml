@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-last-setup"
+description = "Enables the clear_last_setup command without any pre-configured scope."
+commands.allow = ["clear_last_setup"]
+
+[[permission]]
+identifier = "deny-clear-last-setup"
+description = "Denies the clear_last_setup command without any pre-configured scope."
+commands.deny = ["clear_last_setup"]
