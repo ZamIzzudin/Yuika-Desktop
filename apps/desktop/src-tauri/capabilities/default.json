@@ -5,7 +5,18 @@
   "local": true,
   "windows": ["main"],
   "remote": {
-    "urls": ["http://localhost:*", "http://127.0.0.1:*"]
+    "urls": [
+      "http://localhost:*",
+      "http://127.0.0.1:*",
+      "http://tauri.localhost",
+      "https://tauri.localhost"
+    ]
   },
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "allow-pick-host",
+    "allow-pick-remote",
+    "allow-get-last-setup",
+    "allow-clear-last-setup"
+  ]
 }
