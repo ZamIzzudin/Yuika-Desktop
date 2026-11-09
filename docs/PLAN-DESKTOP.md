@@ -65,6 +65,23 @@ h-auto (fix tumpang tindih di window desktop 1280−sidebar 272).
   artefak NSIS + updater manifest.
 - DMG (macOS) menyusul bila ada kebutuhan test relay lintas platform.
 
+**Selesai sesi P2-DTL-3 (engine packaging):** host mode packaged build HIJAU
+end-to-end di Windows. `scripts/bundle-engine.mjs` (repo Yuika-Desktop)
+men-bundle `apps/api` jadi satu CJS esbuild (native better-sqlite3 external,
+tree runtime better-sqlite3/bindings/file-uri-to-path ikut) + personas/skills/
+mcp.json + node.exe; `tauri.conf` resources → `resource_dir/engine`. Release
+`spawn_api` men-spawn `engine/node/node.exe engine/api/yuika-api.cjs` dengan
+env path ke app_data_dir + passthrough `app_data_dir/yuika.env` (KEY=VALUE;
+provider key di sini untuk fresh install) + log api.log (rotate 10MB).
+Pitfall yang solved: (1) `resource_dir` Tauri mengembalikan path verbatim
+`\\?\D:\...` — node tidak bisa resolve sebagai entry (EISDIR 'C:') → strip
+prefix; (2) prebuilt better-sqlite3 dipilih ABI node yang menjalankan npm
+(dev 24 → 137, CI node 22 → 127) — versi node bundle dipilih dinamis dari
+ABI terpasang (map 127→v22.23.4, 137→v24.13.0), probe require addon untuk
+fail-fast; (3) health timeout menampilkan ekor api.log (penyebab asli) via
+`boot_failure_reason` alih-alih pesan generik; (4) pino-pretty memotong nilai
+>120 char dengan "…" — set `YUI_LOG_PRETTY=0` di yuika.env saat debugging.
+
 ## FAQ (D48, jawaban untuk pertanyaan user)
 
 **Apakah source desktop terpisah dari web?** TIDAK. Shell Tauri hanya
