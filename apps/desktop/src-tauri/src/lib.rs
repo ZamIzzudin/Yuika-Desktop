@@ -296,6 +296,94 @@ fn clear_last_setup(app: AppHandle) {
     }
 }
 
+/// File override env engine (spawn_api membaca ini tiap boot).
+fn env_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("yuika.env"))
+}
+
+/// First-run wizard (D67): status konfigurasi engine untuk welcome.html.
+/// Nilai dikirim penuh agar form bisa prefill, KECUALI API key yang hanya
+/// dikirim dalam bentuk mask.
+#[tauri::command]
+fn env_status(app: AppHandle) -> serde_json::Value {
+    let required = ["YUI_OPENAI_BASE_URL", "YUI_OPENAI_API_KEY", "YUI_MODEL"];
+    let mut values = serde_json::Map::new();
+    if let Some(p) = env_file(&app) {
+        if let Ok(txt) = std::fs::read_to_string(&p) {
+            for line in txt.lines() {
+                let l = line.trim();
+                if l.is_empty() || l.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = l.split_once('=') {
+                    values.insert(k.trim().to_string(), serde_json::json!(v.trim()));
+                }
+            }
+        }
+    }
+    let get = |k: &str| values.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let complete = required.iter().all(|k| !get(k).is_empty());
+    let key = get("YUI_OPENAI_API_KEY");
+    let key_masked = if key.chars().count() > 12 {
+        let tail_start = key.chars().count().saturating_sub(4);
+        format!("{}…{}", key.chars().take(5).collect::<String>(), key.chars().skip(tail_start).collect::<String>())
+    } else {
+        key.to_string()
+    };
+    serde_json::json!({
+        "exists": !values.is_empty(),
+        "complete": complete,
+        "required": required,
+        "baseUrl": get("YUI_OPENAI_BASE_URL"),
+        "model": get("YUI_MODEL"),
+        "providerKind": get("YUI_PROVIDER_KIND"),
+        "hasApiKey": !key.is_empty(),
+        "apiKeyMasked": key_masked,
+    })
+}
+
+/// First-run wizard (D67): merge KEY=VALUE ke yuika.env (preserve baris &
+/// komentar lain). Entry dengan value kosong di-skip (tidak menghapus).
+#[tauri::command]
+fn write_env(app: AppHandle, entries: std::collections::BTreeMap<String, String>) -> Result<(), String> {
+    let Some(p) = env_file(&app) else {
+        return Err("app data dir unavailable".into());
+    };
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut lines: Vec<String> = std::fs::read_to_string(&p)
+        .map(|t| t.lines().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+    for (k, v) in &entries {
+        let k = k.trim();
+        if k.is_empty() || v.trim().is_empty() {
+            continue;
+        }
+        let new_line = format!("{k}={}", v.trim());
+        let pos = lines.iter().position(|l| {
+            let lt = l.trim();
+            !lt.starts_with('#')
+                && lt
+                    .split_once('=')
+                    .map(|(kk, _)| kk.trim() == k)
+                    .unwrap_or(false)
+        });
+        match pos {
+            Some(i) => lines[i] = new_line,
+            None => {
+                if !lines.is_empty() {
+                    lines.push(String::new());
+                }
+                lines.push(new_line);
+            }
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    std::fs::write(&p, out).map_err(|e| e.to_string())
+}
+
 /// Matikan API yang kita spawn sendiri (tree-kill; npm → node anak).
 /// API milik proses lain (mis. `npm run dev` user) tidak disentuh.
 fn kill_api(app: &tauri::AppHandle) {
@@ -330,7 +418,9 @@ pub fn run() {
             pick_host,
             pick_remote,
             get_last_setup,
-            clear_last_setup
+            clear_last_setup,
+            env_status,
+            write_env
         ])
         .build(tauri::generate_context!())
         .expect("error while building yuika desktop")
