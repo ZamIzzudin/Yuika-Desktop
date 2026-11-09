@@ -104,6 +104,7 @@ fn spawn_api(_app: &AppHandle) -> std::io::Result<Child> {
 /// bentuk extended-length; node.exe tidak memahaminya sebagai entry arg —
 /// resolveMainPath-nya menerima 'C:' dan EISDIR). Bentuk UNC dikembalikan ke
 /// `\\server\\share`.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn plain_path(p: PathBuf) -> PathBuf {
     let s = p.as_os_str().to_string_lossy();
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
@@ -265,12 +266,15 @@ fn pick_host(window: WebviewWindow, app: AppHandle, api: State<'_, ApiProcess>) 
 }
 
 /// P2-DTL-1 REMOTE: navigasi window ke URL host lain (web-host di mesin lain).
+/// Engine host lokal yang kita spawn sendiri dimatikan dulu — ganti mode
+/// tidak boleh meninggalkan sidecar jalan diam-diam di belakang.
 #[tauri::command]
 fn pick_remote(window: WebviewWindow, app: AppHandle, url: String) -> Result<(), String> {
     let url = url.trim().to_string();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("URL must start with http:// or https://".into());
     }
+    kill_api(&app);
     write_setup(&app, serde_json::json!({ "mode": "remote", "url": url }));
     let js = serde_json::to_string(&url).map_err(|e| e.to_string())?;
     window
