@@ -51,7 +51,27 @@ jobs:
             URL="https://x-access-token:${STUDIO_TOKEN}@github.com/ZamIzzudin/Yuika.git"
           fi
           # Sibling checkout: scripts resolve ../your-yui next to this repo.
-          git clone --depth 1 --branch "$REF" "$URL" "$GITHUB_WORKSPACE/../your-yui"
+          # REF boleh branch/tag/SHA. `--branch` hanya menerima NAMA ref —
+          # SHA (pendek/penuh) resolve dulu via API lalu fetch by full SHA
+          # (GitHub mengizinkan fetch objek by full SHA).
+          if ! git ls-remote --exit-code --heads --tags "$URL" "$REF" >/dev/null 2>&1; then
+            RESOLVED="$(curl -sf -H "Authorization: token $STUDIO_TOKEN" \
+              "https://api.github.com/repos/ZamIzzudin/Yuika/commits/$REF" \
+              | grep -oE '"sha": "[a-f0-9]{40}"' | head -1 | cut -d'"' -f4)"
+            if [ -z "$RESOLVED" ]; then
+              echo "Cannot resolve studio ref: $REF" >&2
+              exit 1
+            fi
+            REF="$RESOLVED"
+          fi
+          if git ls-remote --exit-code --heads --tags "$URL" "$REF" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "$REF" "$URL" "$GITHUB_WORKSPACE/../your-yui"
+          else
+            git init -q "$GITHUB_WORKSPACE/../your-yui"
+            git -C "$GITHUB_WORKSPACE/../your-yui" remote add origin "$URL"
+            git -C "$GITHUB_WORKSPACE/../your-yui" fetch -q --depth 1 origin "$REF"
+            git -C "$GITHUB_WORKSPACE/../your-yui" checkout -q FETCH_HEAD
+          fi
           SHA="$(git -C "$GITHUB_WORKSPACE/../your-yui" rev-parse HEAD)"
           echo "Bundled studio: $REF ($SHA)"
 
