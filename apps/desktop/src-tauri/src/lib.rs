@@ -52,8 +52,11 @@ fn write_setup(app: &AppHandle, v: serde_json::Value) {
 }
 
 /// Child API yang di-spawn shell (None = API dijalankan pihak lain).
+/// Menyimpan PID saja: objek Child dimiliki thread monitor (wait butuh
+/// &mut); kill pakai taskkill/kill via PID. D70: exit code 87 = data reset
+/// → bersihkan setup.json (factory) → respawn engine → reload webview.
 #[derive(Default)]
-struct ApiProcess(Mutex<Option<Child>>);
+struct ApiProcess(Mutex<Option<u32>>);
 
 /// Checkout repo STUDIO untuk dev (spawn API). Urutan resolusi: env
 /// YUIKA_STUDIO_DIR → sibling ./your-yui atau ./Yuika di sebelah repo
@@ -241,7 +244,8 @@ fn pick_host(window: WebviewWindow, app: AppHandle, api: State<'_, ApiProcess>) 
     if !api_healthy() {
         let child =
             spawn_api(&app).map_err(|e| format!("failed to start local engine: {e}"))?;
-        *api.0.lock().map_err(|e| e.to_string())? = Some(child);
+        *api.0.lock().map_err(|e| e.to_string())? = Some(child.id());
+        monitor_engine(app.clone(), child);
     }
     // Poll health di thread terpisah; jangan blok command thread.
     std::thread::spawn(move || {
@@ -393,21 +397,76 @@ fn kill_api(app: &tauri::AppHandle) {
         .lock()
         .ok()
         .and_then(|mut g| g.take());
-    if let Some(child) = taken {
+    if let Some(pid) = taken {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             let _ = Command::new("taskkill")
-                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .creation_flags(0x0800_0000)
                 .spawn();
         }
         #[cfg(not(windows))]
         {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).spawn();
         }
     }
+}
+
+/// D70: tunggu engine exit. Kode 87 = data reset — engine sudah menulis
+/// reset.pending; hapus setup.json bila scope factory (welcome picker jalan
+/// lagi), respawn engine (boot baru mengeksekusi wipe), reload webview.
+/// Exit lain (crash): arahkan kembali ke welcome supaya user bisa restart.
+fn monitor_engine(app: AppHandle, mut child: Child) {
+    std::thread::spawn(move || {
+        loop {
+            let code = child.wait().ok().and_then(|s| s.code());
+            if let Some(state) = app.try_state::<ApiProcess>() {
+                if let Ok(mut g) = state.0.lock() {
+                    *g = None;
+                }
+            }
+            if code == Some(87) {
+                let factory = app
+                    .path()
+                    .app_data_dir()
+                    .ok()
+                    .and_then(|d| std::fs::read_to_string(d.join("reset.pending")).ok())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .map(|v| v.get("scope") == Some(&serde_json::json!("factory")))
+                    .unwrap_or(false);
+                if factory {
+                    if let Some(cfg) = app.path().app_config_dir().ok() {
+                        let _ = std::fs::remove_file(cfg.join("setup.json"));
+                    }
+                }
+                match spawn_api(&app) {
+                    Ok(c) => {
+                        if let Some(state) = app.try_state::<ApiProcess>() {
+                            if let Ok(mut g) = state.0.lock() {
+                                *g = Some(c.id());
+                            }
+                        }
+                        let target = if factory { "./welcome.html?reset=1" } else { "./" };
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.eval(&format!("location.replace('{target}')"));
+                        }
+                        child = c;
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("[yuika] reset: respawn gagal: {e}");
+                    }
+                }
+            } else {
+                // engine mati bukan karena reset: ke welcome, user bisa start ulang
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.eval("location.replace('./welcome.html?reset=1')");
+                }
+            }
+            return;
+        }
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
