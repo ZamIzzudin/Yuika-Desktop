@@ -17,6 +17,8 @@
     "allow-pick-host",
     "allow-pick-remote",
     "allow-get-last-setup",
-    "allow-clear-last-setup"
+    "allow-clear-last-setup",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

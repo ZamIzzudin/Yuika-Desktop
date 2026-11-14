@@ -77,9 +77,43 @@ jobs:
 
       - name: Build installer (installs studio deps, exports UI, tauri build)
         shell: bash
+        env:
+          # Updater signing (P2-DTL-3): tauri CLI signs the NSIS bundle when
+          # createUpdaterArtifacts is on. Required since the updater pubkey
+          # now lives in tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY is not set. Generate a key with 'npx tauri signer generate' and add it (and its password, if any) as repo secrets."
+            exit 1
+          fi
           npm ci
           npm run desktop:build
+
+      - name: Stage updater artifacts (stable names + latest.json)
+        shell: bash
+        run: |
+          NSIS=apps/desktop/src-tauri/target/release/bundle/nsis
+          ls "$NSIS"
+          SETUP=$(ls "$NSIS"/*-setup.exe | head -1)
+          mv "$SETUP" "$NSIS/yuika-setup-x64.exe"
+          mv "$(ls "$NSIS"/*-setup.exe.sig | head -1)" "$NSIS/yuika-setup-x64.exe.sig"
+          VER="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          TAG="${{ inputs.release_tag }}"
+          node -e '
+            const fs = require("fs");
+            const ver = process.argv[1], tag = process.argv[2];
+            const sig = fs.readFileSync("apps/desktop/src-tauri/target/release/bundle/nsis/yuika-setup-x64.exe.sig", "utf8").trim();
+            const url = tag ? `https://github.com/ZamIzzudin/Yuika-Desktop/releases/download/${tag}/yuika-setup-x64.exe` : "";
+            const manifest = {
+              version: ver,
+              pubdate: new Date().toISOString(),
+              platforms: { "windows-x86_64": { signature: sig, url } },
+            };
+            fs.writeFileSync("apps/desktop/src-tauri/target/release/bundle/nsis/latest.json", JSON.stringify(manifest, null, 2) + "\n");
+            console.log("latest.json written for v" + ver + (tag ? " tag " + tag : " (no tag - url left blank, artifact only)"));
+          ' "$VER" "$TAG"
 
       - name: Compute artifact name
         id: art
@@ -92,7 +126,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.art.outputs.name }}
-          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/yuika-setup-x64.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/yuika-setup-x64.exe.sig
+            apps/desktop/src-tauri/target/release/bundle/nsis/latest.json
           if-no-files-found: error
 
       - name: Attach to draft release
@@ -101,5 +138,8 @@ jobs:
         with:
           tag_name: ${{ inputs.release_tag }}
           draft: true
-          files: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
-          body: "Bundles studio ref ${{ inputs.studio_ref }}."
+          files: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/yuika-setup-x64.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/yuika-setup-x64.exe.sig
+            apps/desktop/src-tauri/target/release/bundle/nsis/latest.json
+          body: "Bundles studio ref ${{ inputs.studio_ref }}. Publish this draft release to make the auto-updater endpoint (releases/latest/download/latest.json) serve it."

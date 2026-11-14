@@ -20,6 +20,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Auto-update (P2-DTL-3/D49): updater = cek+unduh+pasang (NSIS passive),
+# process = relaunch setelah install. Endpoint: GitHub releases latest.json.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

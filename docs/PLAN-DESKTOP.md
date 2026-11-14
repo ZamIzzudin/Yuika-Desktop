@@ -107,3 +107,38 @@ penuh di build. Bundel API node = D49.
    (playground maskot) muncul; API hidup di 3211.
 3. Atau klik "Connect to a host" → isi URL host lain → Connect.
 4. Tutup app → proses `node` API yang di-spawn shell ikut mati.
+
+
+## D117-D118 — lazy-config + auto-update (desktop 100%)
+
+### D117 lazy-config (bersama repo studio)
+- Gerbang `engine_env_complete` DIHAPUS dari lib.rs (pick_host + jalur
+  respawn factory di monitor_engine): engine boleh boot tanpa provider;
+  chat baru ditolak jelas oleh API (guard runTurn) sampai provider diisi
+  lewat Settings di dalam app. Wizard env di welcome.html jadi opsional
+  (tombol 'Skip - set up in the app').
+
+### D118 auto-update (P2-DTL-3)
+- Crate: `tauri-plugin-updater` + `tauri-plugin-process` (lib.rs register,
+  capabilities: `updater:default`, `process:allow-restart`).
+- tauri.conf: `bundle.createUpdaterArtifacts: true`, `plugins.updater`
+  (pubkey minisign + endpoint `releases/latest/download/latest.json`,
+  NSIS installMode passive).
+- SIGNING: keypair dibuat `npx tauri signer generate`; private key TIDAK
+  di-commit (file lokal di luar repo: D:/projects/.yuika-desktop-updater.key).
+  Secret GitHub yang HARUS di-set user: `TAURI_SIGNING_PRIVATE_KEY` (isi
+  file key) dan opsional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (key ini tanpa
+  password). Tanpa secret itu CI build GAGAL sengaja (updater aktif).
+- CI (build-desktop.yml): build menandatangani bundle; artefak di-rename
+  stabil (`yuika-setup-x64.exe` + `.sig`), `latest.json` digenerate otomatis
+  (version dari tauri.conf, signature dari .sig, url = asset release tag),
+  ketiganya di-upload sebagai artifact + attach ke draft release.
+  PENTING: draft release TIDAK terlihat endpoint latest — publish dulu
+  supaya updater menemukannya.
+- welcome.html (repo studio): auto-check saat halaman terbuka (skip dev
+  server localhost), bar 'Update available: vX - Install & restart' +
+  link manual 'Check for updates'.
+
+Status desktop: 100% menunggu uji end-to-end installer bersih (install ->
+pakai -> update otomatis -> reset factory) — jalur CI siap dipakai setelah
+secrets di-set dan release v0.2.0+ di-publish.

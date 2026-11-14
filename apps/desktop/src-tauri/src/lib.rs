@@ -242,43 +242,12 @@ fn boot_failure_reason(_app: &AppHandle) -> String {
 /// P2-DTL-1 HOST: pastikan API hidup (spawn bila belum), tunggu health di
 /// background, lalu navigasi window ke UI web. Status dilaporkan ke picker
 /// via window.__hostStatus / window.__hostError di welcome.html.
-/// Nilai efektif var env untuk engine: var shell proses ini yang non-kosong
-/// menang (konsisten dengan precedence spawn_api), sisanya dari yuika.env.
-fn effective_env(app: &AppHandle, key: &str) -> String {
-    if let Ok(v) = std::env::var(key) {
-        if !v.trim().is_empty() {
-            return v.trim().to_string();
-        }
-    }
-    env_file(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|txt| {
-            txt.lines().find_map(|line| {
-                let l = line.trim();
-                if l.starts_with('#') {
-                    return None;
-                }
-                let (k, v) = l.split_once('=')?;
-                (k.trim() == key).then(|| v.trim().to_string())
-            })
-        })
-        .unwrap_or_default()
-}
 
-/// Gerbang defensif (D49 step 1): engine TIDAK boleh di-spawn tanpa trio
-/// provider — semua jalur ke pick_host (klik kartu, wizard, retry) harus
-/// terhalang di sini juga, bukan cuma di sisi web.
-fn engine_env_complete(app: &AppHandle) -> bool {
-    ["YUI_OPENAI_BASE_URL", "YUI_OPENAI_API_KEY", "YUI_MODEL"]
-        .iter()
-        .all(|k| !effective_env(app, k).is_empty())
-}
 
 #[tauri::command]
 fn pick_host(window: WebviewWindow, app: AppHandle, api: State<'_, ApiProcess>) -> Result<(), String> {
-    if !engine_env_complete(&app) {
-        return Err("ENGINE_ENV_INCOMPLETE: The local engine needs a provider (base URL, API key, model) before it can start. The setup dialog will open.".into());
-    }
+    // Lazy-config (D49): engine BOLEH boot tanpa provider — chat baru ditolak
+    // jelas oleh API sampai provider diisi lewat Settings di dalam app.
     write_setup(&app, serde_json::json!({ "mode": "host" }));
     if !api_healthy() {
         let child =
@@ -479,15 +448,6 @@ fn monitor_engine(app: AppHandle, mut child: Child) {
                         let _ = std::fs::remove_file(cfg.join("setup.json"));
                     }
                 }
-                // Factory menghapus yuika.env: respawn tanpa env hanya akan
-                // mati lagi (crash-loop). Langsung ke welcome — wizard env
-                // yang menyiapkan boot berikutnya.
-                if factory && !engine_env_complete(&app) {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.eval("location.replace('./welcome.html?reset=1')");
-                    }
-                    return;
-                }
                 match spawn_api(&app) {
                     Ok(c) => {
                         if let Some(state) = app.try_state::<ApiProcess>() {
@@ -523,6 +483,10 @@ fn monitor_engine(app: AppHandle, mut child: Child) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Auto-update (P2-DTL-3): welcome.html memanggil plugin:updater|check
+        // lalu download_and_install + plugin:process|restart.
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ApiProcess::default())
         .invoke_handler(tauri::generate_handler![
             pick_host,
